@@ -1,0 +1,204 @@
+version: '3.9'
+
+services:
+  # --- Camada de Armazenamento e Catálogo ---
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: main_db # Banco de dados padrão
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
+    ports:
+      - "5432:5432"
+    networks:
+      - lakehouse-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio_storage
+    restart: always
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000" # API
+      - "9001:9001" # Console
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - lakehouse-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  create-minio-bucket:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc config host add minio http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD};
+      /usr/bin/mc mb minio/warehouse --ignore-existing;
+      /usr/bin/mc mb minio/mlflow --ignore-existing;
+      exit 0;
+      "
+    networks:
+      - lakehouse-net
+
+  nessie:
+    image: projectnessie/nessie:0.75.0
+    container_name: nessie_catalog
+    restart: always
+    ports:
+      - "19120:19120"
+    environment:
+      NESSIE_DATABASE_URL: jdbc:postgresql://postgres:5432/nessie
+      NESSIE_DATABASE_USERNAME: ${POSTGRES_USER}
+      NESSIE_DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - lakehouse-net
+
+  # --- Camada de Processamento ---
+  spark-master:
+    image: bitnami/spark:3.5
+    container_name: spark_master
+    restart: always
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+    volumes:
+      - ./spark/conf/spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
+      - ./dbt_project:/opt/bitnami/spark/dbt_project # Monta o projeto dbt
+    networks:
+      - lakehouse-net
+
+  spark-worker:
+    image: bitnami/spark:3.5
+    restart: always
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    volumes:
+      - ./spark/conf/spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
+      - ./dbt_project:/opt/bitnami/spark/dbt_project
+    depends_on:
+      - spark-master
+    networks:
+      - lakehouse-net
+
+  # --- Camada de Ingestão ---
+  airbyte:
+    image: airbyte/airbyte-platform-community:1.0.0-alpha.2
+    container_name: airbyte_platform
+    restart: always
+    ports:
+      - "8000:8000" # UI
+      - "8001:8001" # API
+    environment:
+      - AIRBYTE_VERSION=1.0.0-alpha.2
+      - DOCKER_HOST=tcp://docker-proxy:2375 # Aponta para o proxy Docker-in-Docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock # Cuidado com esta montagem em produção
+    networks:
+      - lakehouse-net
+    depends_on:
+      - docker-proxy
+
+  docker-proxy:
+    image: anandundavia/docker-socat:latest
+    container_name: docker_proxy
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - lakehouse-net
+
+  # --- Camada de Orquestração ---
+  prefect-server:
+    image: prefecthq/prefect:2-latest
+    container_name: prefect_server
+    restart: always
+    environment:
+      - PREFECT_UI_API_URL=http://${HOST_IP}:4200/api
+      - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prefect_server
+    command: prefect server start --host 0.0.0.0
+    ports:
+      - "4200:4200"
+    networks:
+      - lakehouse-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  prefect-agent:
+    image: prefecthq/prefect:2-latest
+    container_name: prefect_agent
+    restart: always
+    environment:
+      - PREFECT_API_URL=${PREFECT_API_URL}
+    command: prefect agent start -q 'default'
+    networks:
+      - lakehouse-net
+    depends_on:
+      - prefect-server
+
+  # --- Camada de MLOps ---
+  mlflow-server:
+    image: python:3.9-slim
+    container_name: mlflow_server
+    restart: always
+    command: >
+      bash -c "pip install mlflow boto3 psycopg2-binary &&
+               mlflow server
+               --backend-store-uri postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow_db
+               --default-artifact-root s3://mlflow/
+               --host 0.0.0.0"
+    ports:
+      - "5000:5000"
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - MLFLOW_S3_ENDPOINT_URL=${MLFLOW_S3_ENDPOINT_URL}
+    networks:
+      - lakehouse-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+# --- Redes e Volumes ---
+networks:
+  lakehouse-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  minio_data:

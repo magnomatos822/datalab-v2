@@ -1,0 +1,11 @@
+# dbt_project/profiles.yml
+production_lakehouse:
+  target: spark
+  outputs:
+    spark:
+      type: spark
+      method: thrift
+      host: spark-master
+      port: 10000 # Porta padrão do Thrift Server no Spark
+      schema: default # Esquema padrão para materializações
+      threads: 4
