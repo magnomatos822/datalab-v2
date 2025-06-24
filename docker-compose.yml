@@ -3,7 +3,7 @@ version: '3.9'
 services:
   # --- Camada de Armazenamento e Catálogo ---
   postgres:
-    image: postgres:15-alpine
+    image: postgres:17-alpine
     container_name: postgres_db
     restart: always
     environment:
@@ -60,7 +60,7 @@ services:
       - lakehouse-net
 
   nessie:
-    image: projectnessie/nessie:0.75.0
+    image: nessie/nessie:latest
     container_name: nessie_catalog
     restart: always
     ports:
@@ -115,14 +115,14 @@ services:
 
   # --- Camada de Ingestão ---
   airbyte:
-    image: airbyte/airbyte-platform-community:1.0.0-alpha.2
+    image: airbyte/airbyte-platform-community:0.41.12
     container_name: airbyte_platform
     restart: always
     ports:
       - "8000:8000" # UI
       - "8001:8001" # API
     environment:
-      - AIRBYTE_VERSION=1.0.0-alpha.2
+      - AIRBYTE_VERSION=0.41.12
       - DOCKER_HOST=tcp://docker-proxy:2375 # Aponta para o proxy Docker-in-Docker
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Cuidado com esta montagem em produção
@@ -132,13 +132,14 @@ services:
       - docker-proxy
 
   docker-proxy:
-    image: anandundavia/docker-socat:latest
+    image: alpine/socat
     container_name: docker_proxy
     restart: always
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - lakehouse-net
+    command: "socat TCP-LISTEN:2375,fork UNIX-CONNECT:/var/run/docker.sock"
 
   # --- Camada de Orquestração ---
   prefect-server:
