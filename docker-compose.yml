@@ -1,5 +1,3 @@
-version: '3.9'
-
 services:
   # --- Camada de Armazenamento e Catálogo ---
   postgres:
@@ -14,16 +12,18 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
     ports:
-      - "5432:5432"
+      - "5433:5432"
     networks:
       - lakehouse-net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      # FIX: Explicitly specify the database to check
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d main_db" ]
       interval: 10s
       timeout: 5s
       retries: 5
 
   minio:
+    # BEST PRACTICE: Pin to a specific version instead of 'latest'
     image: minio/minio:latest
     container_name: minio_storage
     restart: always
@@ -44,6 +44,8 @@ services:
       timeout: 20s
       retries: 3
 
+    # In your docker-compose.yml
+
   create-minio-bucket:
     image: minio/mc
     depends_on:
@@ -54,18 +56,20 @@ services:
       /usr/bin/mc config host add minio http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD};
       /usr/bin/mc mb minio/warehouse --ignore-existing;
       /usr/bin/mc mb minio/mlflow --ignore-existing;
+      /usr/bin/mc mb minio/airbyte --ignore-existing; # <-- ADD THIS LINE
       exit 0;
       "
     networks:
       - lakehouse-net
 
   nessie:
-    image: nessie/nessie:latest
+    image: projectnessie/nessie
     container_name: nessie_catalog
     restart: always
     ports:
       - "19120:19120"
     environment:
+      # FIX: Use the internal port 5432 for container-to-container communication
       NESSIE_DATABASE_URL: jdbc:postgresql://postgres:5432/nessie
       NESSIE_DATABASE_USERNAME: ${POSTGRES_USER}
       NESSIE_DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
@@ -74,6 +78,7 @@ services:
         condition: service_healthy
     networks:
       - lakehouse-net
+
 
   # --- Camada de Processamento ---
   spark-master:
@@ -113,33 +118,85 @@ services:
     networks:
       - lakehouse-net
 
-  # --- Camada de Ingestão ---
-  airbyte:
-    image: airbyte/airbyte-platform-community:0.41.12
-    container_name: airbyte_platform
-    restart: always
-    ports:
-      - "8000:8000" # UI
-      - "8001:8001" # API
+    # --- Camada de Ingestão (REVISED AND IMPROVED) ---
+  airbyte-bootloader:
+    image: airbyte/bootloader:0.50.43
+    container_name: airbyte_bootloader
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
-      - AIRBYTE_VERSION=0.41.12
-      - DOCKER_HOST=tcp://docker-proxy:2375 # Aponta para o proxy Docker-in-Docker
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock # Cuidado com esta montagem em produção
+      - AIRBYTE_VERSION=0.50.43
+      # FIX: Add the consolidated DATABASE_URL
+      - DATABASE_URL=jdbc:postgresql://${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-airbyte}
+      - DATABASE_USER=${POSTGRES_USER}
+      - DATABASE_PASSWORD=${POSTGRES_PASSWORD}
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432 # Corrected Port
+      - DATABASE_DB=airbyte
     networks:
       - lakehouse-net
-    depends_on:
-      - docker-proxy
 
-  docker-proxy:
-    image: alpine/socat
-    container_name: docker_proxy
+  airbyte-server:
+    image: airbyte/server:0.50.43
+    container_name: airbyte_server
+    restart: always
+    ports:
+      - "8001:8001"
+    environment:
+      - AIRBYTE_VERSION=0.50.43
+      - WEBAPP_URL=http://localhost:8000/
+      # FIX: Add the consolidated DATABASE_URL
+      - DATABASE_URL=jdbc:postgresql://${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-airbyte}
+      - DATABASE_USER=${POSTGRES_USER}
+      - DATABASE_PASSWORD=${POSTGRES_PASSWORD}
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432 # Corrected Port
+      - DATABASE_DB=airbyte
+      - CONFIG_DATABASE_USER=${POSTGRES_USER}
+      - CONFIG_DATABASE_PASSWORD=${POSTGRES_PASSWORD}
+      - CONFIG_DATABASE_URL=jdbc:postgresql://postgres:5432/airbyte # Corrected Port
+      - JOBS_DATABASE_MINIMUM_FLYWAY_MIGRATION_VERSION=0.29.15.001
+      - WORKER_HOST=airbyte-worker
+    depends_on:
+      airbyte-bootloader:
+        condition: service_completed_successfully
+    networks:
+      - lakehouse-net
+
+  airbyte-webapp:
+    image: airbyte/webapp:0.50.43
+    container_name: airbyte_webapp
+    restart: always
+    ports:
+      - "8000:80"
+    depends_on:
+      - airbyte-server
+    networks:
+      - lakehouse-net
+
+  airbyte-worker:
+    image: airbyte/worker:0.50.43
+    container_name: airbyte_worker
     restart: always
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - airbyte_workspace:/tmp/workspace
+    environment:
+      - AIRBYTE_VERSION=0.50.43
+      - AIRBYTE_ROLE=dev
+      - S3_LOG_BUCKET=airbyte
+      - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
+      - S3_ENDPOINT=http://minio:9000
+      - S3_PATH_STYLE_ACCESS=true
+    depends_on:
+      minio:
+        condition: service_healthy
+      airbyte-bootloader:
+        condition: service_completed_successfully
     networks:
       - lakehouse-net
-    command: "socat TCP-LISTEN:2375,fork UNIX-CONNECT:/var/run/docker.sock"
 
   # --- Camada de Orquestração ---
   prefect-server:
@@ -148,6 +205,7 @@ services:
     restart: always
     environment:
       - PREFECT_UI_API_URL=http://${HOST_IP}:4200/api
+      # FIX: Use the internal port 5432
       - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prefect_server
     command: prefect server start --host 0.0.0.0
     ports:
@@ -157,6 +215,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
 
   prefect-agent:
     image: prefecthq/prefect:2-latest
@@ -172,21 +231,21 @@ services:
 
   # --- Camada de MLOps ---
   mlflow-server:
-    image: python:3.9-slim
+    build: ./mlflow # Build the custom image
     container_name: mlflow_server
     restart: always
+    # The command is now much cleaner
     command: >
-      bash -c "pip install mlflow boto3 psycopg2-binary &&
-               mlflow server
-               --backend-store-uri postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow_db
-               --default-artifact-root s3://mlflow/
-               --host 0.0.0.0"
+      --backend-store-uri postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow_db
+      --default-artifact-root s3://mlflow/
+      --host 0.0.0.0
     ports:
       - "5000:5000"
     environment:
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - MLFLOW_S3_ENDPOINT_URL=${MLFLOW_S3_ENDPOINT_URL}
+      # FIX: Use the MinIO credentials defined in your .env file
+      - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
     networks:
       - lakehouse-net
     depends_on:
@@ -203,3 +262,4 @@ networks:
 volumes:
   postgres_data:
   minio_data:
+  airbyte_workspace:
