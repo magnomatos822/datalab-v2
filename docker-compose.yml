@@ -1,3 +1,11 @@
+x-airbyte-db-env: &airbyte-db-env
+  DATABASE_URL: jdbc:postgresql://${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-airbyte}
+  DATABASE_USER: ${POSTGRES_USER}
+  DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+  DATABASE_HOST: postgres
+  DATABASE_PORT: 5432
+  DATABASE_DB: airbyte
+
 services:
   # --- Camada de Armazenamento e Catálogo ---
   postgres:
@@ -23,8 +31,7 @@ services:
       retries: 5
 
   minio:
-    # BEST PRACTICE: Pin to a specific version instead of 'latest'
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-06-13T11-33-47Z-cpuv1
     container_name: minio_storage
     restart: always
     environment:
@@ -46,24 +53,12 @@ services:
 
     # In your docker-compose.yml
 
-  create-minio-bucket:
-    image: minio/mc
-    depends_on:
-      minio:
-        condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      /usr/bin/mc config host add minio http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD};
-      /usr/bin/mc mb minio/warehouse --ignore-existing;
-      /usr/bin/mc mb minio/mlflow --ignore-existing;
-      /usr/bin/mc mb minio/airbyte --ignore-existing; # <-- ADD THIS LINE
-      exit 0;
-      "
-    networks:
-      - lakehouse-net
+  # create-minio-bucket:
+  
 
   nessie:
-    image: projectnessie/nessie
+    # BEST PRACTICE: Versão da imagem alinhada com a extensão do Spark
+    image: projectnessie/nessie:0.76.6-java
     container_name: nessie_catalog
     restart: always
     ports:
@@ -91,11 +86,14 @@ services:
       - SPARK_RPC_ENCRYPTION_ENABLED=no
       - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
       - SPARK_SSL_ENABLED=no
+      # Passa as credenciais do MinIO para o Spark
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
     ports:
       - "8080:8080"
       - "7077:7077"
     volumes:
-      - ./spark/conf/spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
+      - ./spark/spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
       - ./dbt_project:/opt/bitnami/spark/dbt_project # Monta o projeto dbt
     networks:
       - lakehouse-net
@@ -110,30 +108,28 @@ services:
       - SPARK_RPC_ENCRYPTION_ENABLED=no
       - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
       - SPARK_SSL_ENABLED=no
+      # Passa as credenciais do MinIO para o Spark
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
     volumes:
-      - ./spark/conf/spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
+      - ./spark/spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
       - ./dbt_project:/opt/bitnami/spark/dbt_project
     depends_on:
       - spark-master
     networks:
       - lakehouse-net
 
-    # --- Camada de Ingestão (REVISED AND IMPROVED) ---
+  # --- Camada de Ingestão (REVISED AND IMPROVED) ---
   airbyte-bootloader:
-    image: airbyte/bootloader:0.50.43
+    image: airbyte/bootloader:dev-7b69422f70
     container_name: airbyte_bootloader
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      - AIRBYTE_VERSION=0.50.43
-      # FIX: Add the consolidated DATABASE_URL
-      - DATABASE_URL=jdbc:postgresql://${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-airbyte}
-      - DATABASE_USER=${POSTGRES_USER}
-      - DATABASE_PASSWORD=${POSTGRES_PASSWORD}
-      - DATABASE_HOST=postgres
-      - DATABASE_PORT=5432 # Corrected Port
-      - DATABASE_DB=airbyte
+      # Usa a âncora YAML para evitar repetição
+      AIRBYTE_VERSION: 0.50.43
+      <<: *airbyte-db-env
     networks:
       - lakehouse-net
 
@@ -143,21 +139,21 @@ services:
     restart: always
     ports:
       - "8001:8001"
+    # FIX: O servidor também precisa de acesso ao volume do workspace.
+    volumes:
+      - airbyte_workspace:/tmp/workspace
     environment:
-      - AIRBYTE_VERSION=0.50.43
-      - WEBAPP_URL=http://localhost:8000/
-      # FIX: Add the consolidated DATABASE_URL
-      - DATABASE_URL=jdbc:postgresql://${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-airbyte}
-      - DATABASE_USER=${POSTGRES_USER}
-      - DATABASE_PASSWORD=${POSTGRES_PASSWORD}
-      - DATABASE_HOST=postgres
-      - DATABASE_PORT=5432 # Corrected Port
-      - DATABASE_DB=airbyte
-      - CONFIG_DATABASE_USER=${POSTGRES_USER}
-      - CONFIG_DATABASE_PASSWORD=${POSTGRES_PASSWORD}
-      - CONFIG_DATABASE_URL=jdbc:postgresql://postgres:5432/airbyte # Corrected Port
-      - JOBS_DATABASE_MINIMUM_FLYWAY_MIGRATION_VERSION=0.29.15.001
-      - WORKER_HOST=airbyte-worker
+      # Usa a âncora YAML para evitar repetição
+      AIRBYTE_VERSION: 0.50.43
+      WEBAPP_URL: http://localhost:8000/
+      <<: *airbyte-db-env
+      CONFIG_DATABASE_USER: ${POSTGRES_USER}
+      CONFIG_DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+      CONFIG_DATABASE_URL: jdbc:postgresql://postgres:5432/airbyte # Corrected Port
+      JOBS_DATABASE_MINIMUM_FLYWAY_MIGRATION_VERSION: 0.29.15.001
+      WORKER_HOST: airbyte-worker
+      # FIX: O servidor precisa saber onde está o workspace para gerenciar os jobs.
+      AIRBYTE_WORKSPACE_ROOT: ${AIRBYTE_WORKSPACE_ROOT}
     depends_on:
       airbyte-bootloader:
         condition: service_completed_successfully
@@ -185,6 +181,7 @@ services:
     environment:
       - AIRBYTE_VERSION=0.50.43
       - AIRBYTE_ROLE=dev
+      - AIRBYTE_WORKSPACE_ROOT=${AIRBYTE_WORKSPACE_ROOT}
       - S3_LOG_BUCKET=airbyte
       - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
       - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
@@ -200,11 +197,12 @@ services:
 
   # --- Camada de Orquestração ---
   prefect-server:
-    image: prefecthq/prefect:2-latest
+    # BEST PRACTICE: Versão da imagem fixada
+    image: prefecthq/prefect:2.14.21-python3.11
     container_name: prefect_server
     restart: always
     environment:
-      - PREFECT_UI_API_URL=http://${HOST_IP}:4200/api
+      - PREFECT_UI_API_URL=http://prefect-server:4200/api
       # FIX: Use the internal port 5432
       - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/prefect_server
     command: prefect server start --host 0.0.0.0
@@ -218,11 +216,13 @@ services:
 
 
   prefect-agent:
-    image: prefecthq/prefect:2-latest
+    # BEST PRACTICE: Versão da imagem fixada
+    image: prefecthq/prefect:2.14.21-python3.11
     container_name: prefect_agent
     restart: always
     environment:
-      - PREFECT_API_URL=${PREFECT_API_URL}
+      # FIX: Use the service name for container-to-container communication
+      - PREFECT_API_URL=http://prefect-server:4200/api
     command: prefect agent start -q 'default'
     networks:
       - lakehouse-net
