@@ -1,11 +1,3 @@
-x-airbyte-db-env: &airbyte-db-env
-  DATABASE_URL: jdbc:postgresql://${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-airbyte}
-  DATABASE_USER: ${POSTGRES_USER}
-  DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
-  DATABASE_HOST: postgres
-  DATABASE_PORT: 5432
-  DATABASE_DB: airbyte
-
 services:
   # --- Camada de Armazenamento e Catálogo ---
   postgres:
@@ -51,10 +43,21 @@ services:
       timeout: 20s
       retries: 3
 
-    # In your docker-compose.yml
-
-  # create-minio-bucket:
-  
+  create-minio-buckets:
+    image: minio/mc:RELEASE.2024-07-31T15-58-33Z
+    container_name: minio_bucket_setup
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - ./minio/create-buckets.sh:/create-buckets.sh:ro
+    entrypoint: /bin/sh
+    command: /create-buckets.sh
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - lakehouse-net
 
   nessie:
     # BEST PRACTICE: Versão da imagem alinhada com a extensão do Spark
@@ -90,7 +93,7 @@ services:
       - MINIO_ROOT_USER=${MINIO_ROOT_USER}
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
     ports:
-      - "8080:8080"
+      - "8082:8080"
       - "7077:7077"
     volumes:
       - ./spark/spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
@@ -100,6 +103,7 @@ services:
 
   spark-worker:
     image: bitnami/spark:3.5
+    # O container_name é omitido para permitir a escalabilidade
     restart: always
     environment:
       - SPARK_MODE=worker
@@ -111,6 +115,9 @@ services:
       # Passa as credenciais do MinIO para o Spark
       - MINIO_ROOT_USER=${MINIO_ROOT_USER}
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+      # Configuração de recursos do Worker (customizável via .env)
+      - SPARK_WORKER_CORES=${SPARK_WORKER_CORES:-1}
+      - SPARK_WORKER_MEMORY=${SPARK_WORKER_MEMORY:-2G}
     volumes:
       - ./spark/spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
       - ./dbt_project:/opt/bitnami/spark/dbt_project
@@ -120,80 +127,56 @@ services:
       - lakehouse-net
 
   # --- Camada de Ingestão (REVISED AND IMPROVED) ---
-  airbyte-bootloader:
-    image: airbyte/bootloader:dev-7b69422f70
-    container_name: airbyte_bootloader
+
+  apache-hop:
+    image: apache/hop:2.14.0
+    container_name: hop_etl_studio
+    restart: always
+    ports:
+      - "8081:8080"  # Hop Web Interface
+    environment:
+      - HOP_SERVER_USER=admin
+      - HOP_SERVER_PASS=${HOP_PASSWORD:-supersecretpassword}
+      - HOP_AUDIT_FOLDER=/opt/hop/audit
+      - HOP_METADATA_FOLDER=/opt/hop/metadata
+      - HOP_LOG_LEVEL=Basic
+      # Configurações de conectividade
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=apache_hop
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      # MinIO/S3 Configuration
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=${MINIO_ROOT_USER}
+      - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD}
+      - S3_BRONZE_BUCKET=${S3_BRONZE_BUCKET:-bronze}
+      - S3_SILVER_BUCKET=${S3_SILVER_BUCKET:-silver}
+      - S3_GOLD_BUCKET=${S3_GOLD_BUCKET:-gold}
+      # Spark Integration
+      - SPARK_MASTER=spark://spark-master:7077
+      # Memory settings
+      - HOP_OPTIONS=-Xmx2g -Xms1g
+    volumes:
+      - hop_projects:/opt/hop/projects
+      - hop_metadata:/opt/hop/metadata
+      - hop_audit:/opt/hop/audit
+      - hop_config:/opt/hop/config
+      - ./hop/environments:/opt/hop/config/environments:ro
+      - ./hop/projects:/opt/hop/projects-templates:ro
+    networks:
+      - lakehouse-net
     depends_on:
       postgres:
         condition: service_healthy
-    environment:
-      # Usa a âncora YAML para evitar repetição
-      AIRBYTE_VERSION: 0.50.43
-      <<: *airbyte-db-env
-    networks:
-      - lakehouse-net
-
-  airbyte-server:
-    image: airbyte/server:0.50.43
-    container_name: airbyte_server
-    restart: always
-    ports:
-      - "8001:8001"
-    # FIX: O servidor também precisa de acesso ao volume do workspace.
-    volumes:
-      - airbyte_workspace:/tmp/workspace
-    environment:
-      # Usa a âncora YAML para evitar repetição
-      AIRBYTE_VERSION: 0.50.43
-      WEBAPP_URL: http://localhost:8000/
-      <<: *airbyte-db-env
-      CONFIG_DATABASE_USER: ${POSTGRES_USER}
-      CONFIG_DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
-      CONFIG_DATABASE_URL: jdbc:postgresql://postgres:5432/airbyte # Corrected Port
-      JOBS_DATABASE_MINIMUM_FLYWAY_MIGRATION_VERSION: 0.29.15.001
-      WORKER_HOST: airbyte-worker
-      # FIX: O servidor precisa saber onde está o workspace para gerenciar os jobs.
-      AIRBYTE_WORKSPACE_ROOT: ${AIRBYTE_WORKSPACE_ROOT}
-    depends_on:
-      airbyte-bootloader:
-        condition: service_completed_successfully
-    networks:
-      - lakehouse-net
-
-  airbyte-webapp:
-    image: airbyte/webapp:0.50.43
-    container_name: airbyte_webapp
-    restart: always
-    ports:
-      - "8000:80"
-    depends_on:
-      - airbyte-server
-    networks:
-      - lakehouse-net
-
-  airbyte-worker:
-    image: airbyte/worker:0.50.43
-    container_name: airbyte_worker
-    restart: always
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - airbyte_workspace:/tmp/workspace
-    environment:
-      - AIRBYTE_VERSION=0.50.43
-      - AIRBYTE_ROLE=dev
-      - AIRBYTE_WORKSPACE_ROOT=${AIRBYTE_WORKSPACE_ROOT}
-      - S3_LOG_BUCKET=airbyte
-      - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER}
-      - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
-      - S3_ENDPOINT=http://minio:9000
-      - S3_PATH_STYLE_ACCESS=true
-    depends_on:
       minio:
         condition: service_healthy
-      airbyte-bootloader:
-        condition: service_completed_successfully
-    networks:
-      - lakehouse-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/hop/"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 60s
 
   # --- Camada de Orquestração ---
   prefect-server:
@@ -262,4 +245,7 @@ networks:
 volumes:
   postgres_data:
   minio_data:
-  airbyte_workspace:
+  hop_projects:
+  hop_metadata:
+  hop_audit:
+  hop_config:

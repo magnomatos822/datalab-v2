@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<environment>
+    <name>datalab</name>
+    <description>DataLab v2 Environment Configuration</description>
+    <variables>
+        <!-- PostgreSQL Configuration -->
+        <variable>
+            <name>POSTGRES_HOST</name>
+            <value>postgres</value>
+            <description>PostgreSQL hostname</description>
+        </variable>
+        <variable>
+            <name>POSTGRES_PORT</name>
+            <value>5432</value>
+            <description>PostgreSQL port</description>
+        </variable>
+        <variable>
+            <name>POSTGRES_DATABASE</name>
+            <value>main_db</value>
+            <description>PostgreSQL main database</description>
+        </variable>
+        <variable>
+            <name>POSTGRES_USERNAME</name>
+            <value>admin</value>
+            <description>PostgreSQL username</description>
+        </variable>
+        <variable>
+            <name>POSTGRES_PASSWORD</name>
+            <value>supersecretpassword</value>
+            <description>PostgreSQL password</description>
+        </variable>
+
+        <!-- MinIO/S3 Configuration -->
+        <variable>
+            <name>S3_ENDPOINT</name>
+            <value>http://minio:9000</value>
+            <description>MinIO S3 endpoint</description>
+        </variable>
+        <variable>
+            <name>S3_ACCESS_KEY</name>
+            <value>admin</value>
+            <description>MinIO access key</description>
+        </variable>
+        <variable>
+            <name>S3_SECRET_KEY</name>
+            <value>supersecretpassword</value>
+            <description>MinIO secret key</description>
+        </variable>
+        <variable>
+            <name>S3_BUCKET_WAREHOUSE</name>
+            <value>warehouse</value>
+            <description>Data warehouse bucket</description>
+        </variable>
+        <variable>
+            <name>S3_BUCKET_STAGING</name>
+            <value>staging</value>
+            <description>Staging data bucket</description>
+        </variable>
+
+        <!-- Spark Configuration -->
+        <variable>
+            <name>SPARK_MASTER</name>
+            <value>spark://spark-master:7077</value>
+            <description>Spark master URL</description>
+        </variable>
+        <variable>
+            <name>SPARK_WEB_UI</name>
+            <value>http://spark-master:8080</value>
+            <description>Spark Web UI URL</description>
+        </variable>
+
+        <!-- External Services -->
+        <variable>
+            <name>PREFECT_API</name>
+            <value>http://prefect-server:4200/api</value>
+            <description>Prefect API endpoint</description>
+        </variable>
+        <variable>
+            <name>MLFLOW_TRACKING_URI</name>
+            <value>http://mlflow-server:5000</value>
+            <description>MLflow tracking server</description>
+        </variable>
+        <variable>
+            <name>NESSIE_URI</name>
+            <value>http://nessie:19120/api/v2</value>
+            <description>Nessie catalog API</description>
+        </variable>
+    </variables>
+</environment>

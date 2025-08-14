@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project>
+    <name>DataLab ETL Project</name>
+    <description>Template project for DataLab v2 ETL/ELT pipelines</description>
+    <company>DataLab</company>
+    <department>Data Engineering</department>
+    <metadata_base_folder>${PROJECT_HOME}/metadata</metadata_base_folder>
+    <unit_tests_base_path>${PROJECT_HOME}/tests</unit_tests_base_path>
+    <data_sets_csv_folder>${PROJECT_HOME}/datasets</data_sets_csv_folder>
+    <enforce_execution_in_home>Y</enforce_execution_in_home>
+    <config>
+        <variables>
+            <variable>
+                <name>PROJECT_HOME</name>
+                <value>/opt/hop/projects/datalab-etl</value>
+                <description>Project home folder</description>
+            </variable>
+            <variable>
+                <name>DATA_DIR</name>
+                <value>${PROJECT_HOME}/data</value>
+                <description>Local data directory</description>
+            </variable>
+            <variable>
+                <name>LOG_DIR</name>
+                <value>${PROJECT_HOME}/logs</value>
+                <description>Logs directory</description>
+            </variable>
+        </variables>
+    </config>
+</project>

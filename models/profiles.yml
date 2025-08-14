@@ -1,11 +1,53 @@
 # dbt_project/profiles.yml
-production_lakehouse:
-  target: spark
+datalab_medallion:
+  target: snowflake_dev
   outputs:
+    # Configuração para Snowflake (Produção/Cloud)
+    snowflake_prod:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'TRANSFORMER') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE', 'DATALAB_DB') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', 'COMPUTE_WH') }}"
+      schema: analytics
+      threads: 8
+      keepalives_idle: 240
+      search_path: "analytics,bronze,silver,gold"
+      query_tag: "dbt-medallion-architecture"
+
+    # Configuração para Snowflake (Desenvolvimento Local)
+    snowflake_dev:
+      type: snowflake
+      account: "dev-account.local"
+      user: "{{ env_var('SNOWFLAKE_USER', 'dev_user') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD', 'dev_password') }}"
+      role: DEVELOPER
+      database: DATALAB_DEV_DB
+      warehouse: DEV_WH
+      schema: dev_analytics
+      threads: 4
+      host: "snowflake-proxy"
+      port: 443
+
+    # Configuração para Spark (Fallback/Desenvolvimento)
     spark:
       type: spark
       method: thrift
       host: spark-master
-      port: 10000 # Porta padrão do Thrift Server no Spark
-      schema: default # Esquema padrão para materializações
+      port: 10000
+      schema: default
       threads: 4
+
+    # Configuração para PostgreSQL (Testes locais)
+    postgres_local:
+      type: postgres
+      host: postgres
+      user: "{{ env_var('POSTGRES_USER') }}"
+      password: "{{ env_var('POSTGRES_PASSWORD') }}"
+      port: 5432
+      dbname: analytics_test
+      schema: public
+      threads: 4
+      search_path: "public,bronze,silver,gold"

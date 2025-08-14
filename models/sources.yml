@@ -1,0 +1,124 @@
+version: 2
+
+# Definição de fontes de dados seguindo Medallion Architecture
+sources:
+  - name: external
+    description: "Fontes de dados externas carregadas no MinIO (camada bronze)"
+    meta:
+      owner: "data-engineering"
+      contact: "data-team@company.com"
+
+    tables:
+      - name: raw_table
+        description: "Dados brutos de sistemas externos"
+        external:
+          location: "s3://bronze-raw-data/"
+          file_format: parquet
+          auto_refresh: true
+
+        columns:
+          - name: id
+            description: "Identificador único do registro"
+            tests:
+              - not_null
+              - unique
+
+          - name: external_ref_id
+            description: "Referência externa do sistema de origem"
+
+          - name: raw_data
+            description: "Dados brutos em formato original"
+
+          - name: source_system
+            description: "Sistema de origem dos dados"
+            tests:
+              - accepted_values:
+                  values: ["SYSTEM_A", "SYSTEM_B", "SYSTEM_C"]
+
+          - name: file_name
+            description: "Nome do arquivo original"
+
+          - name: file_path
+            description: "Caminho completo do arquivo no MinIO"
+
+          - name: ingestion_timestamp
+            description: "Timestamp de ingestão dos dados"
+            tests:
+              - not_null
+
+  - name: streaming
+    description: "Dados de streaming em tempo real (camada bronze)"
+    meta:
+      owner: "data-engineering"
+
+    tables:
+      - name: events_stream
+        description: "Stream de eventos em tempo real"
+        external:
+          location: "s3://bronze-streaming/"
+          file_format: json
+          auto_refresh: true
+          partition_by: ["date_partition"]
+
+        columns:
+          - name: event_id
+            description: "ID único do evento"
+            tests:
+              - not_null
+              - unique
+
+          - name: event_type
+            description: "Tipo do evento"
+
+          - name: event_data
+            description: "Payload do evento em JSON"
+
+          - name: event_timestamp
+            description: "Timestamp do evento"
+            tests:
+              - not_null
+
+          - name: date_partition
+            description: "Partição por data (YYYY-MM-DD)"
+
+  - name: batch
+    description: "Dados de processamento em lote (camada bronze)"
+
+    tables:
+      - name: daily_extracts
+        description: "Extrações diárias de sistemas legados"
+        external:
+          location: "s3://bronze-batch/"
+          file_format: csv
+          auto_refresh: false
+
+        columns:
+          - name: extract_id
+            description: "ID da extração"
+            tests:
+              - not_null
+
+          - name: extract_date
+            description: "Data da extração"
+            tests:
+              - not_null
+
+          - name: data_payload
+            description: "Dados extraídos"
+
+          - name: record_count
+            description: "Quantidade de registros extraídos"
+
+# Definição de esquemas para as camadas
+schemas:
+  - name: bronze
+    description: "Camada bronze - dados brutos sem transformação"
+
+  - name: silver
+    description: "Camada silver - dados limpos e validados"
+
+  - name: gold
+    description: "Camada gold - dados agregados prontos para consumo"
+
+  - name: audit
+    description: "Esquema para auditoria e monitoramento"

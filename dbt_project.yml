@@ -1,0 +1,119 @@
+name: "datalab_medallion"
+version: "1.0.0"
+config-version: 2
+
+# Configuração do projeto seguindo Medallion Architecture
+profile: "datalab_medallion"
+
+# Diretórios do projeto
+model-paths: ["models"]
+analysis-paths: ["analysis"]
+test-paths: ["tests"]
+seed-paths: ["data"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+# Diretórios de saída
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# Configurações de modelos por camada
+models:
+  datalab_medallion:
+    # BRONZE LAYER - Dados brutos, sem transformação
+    bronze:
+      +materialized: table
+      +schema: bronze
+      +tags: ["bronze", "raw_data"]
+      +pre-hook:
+        - "{{ log('Processando camada BRONZE: ' ~ this, info=true) }}"
+      +post-hook:
+        - "{{ audit_table_creation(this) }}"
+        - "INSERT INTO {{ ref('data_lineage') }} VALUES ('{{ this }}', '{{ run_started_at }}', 'bronze')"
+
+    # SILVER LAYER - Dados limpos e normalizados
+    silver:
+      +materialized: table
+      +schema: silver
+      +tags: ["silver", "cleaned_data"]
+      +pre-hook:
+        - "{{ log('Processando camada SILVER: ' ~ this, info=true) }}"
+      +post-hook:
+        - "{{ audit_table_creation(this) }}"
+        - "{{ data_quality_checks(this) }}"
+        - "INSERT INTO {{ ref('data_lineage') }} VALUES ('{{ this }}', '{{ run_started_at }}', 'silver')"
+
+    # GOLD LAYER - Dados agregados para consumo
+    gold:
+      +materialized: table
+      +schema: gold
+      +tags: ["gold", "business_ready"]
+      +pre-hook:
+        - "{{ log('Processando camada GOLD: ' ~ this, info=true) }}"
+      +post-hook:
+        - "{{ audit_table_creation(this) }}"
+        - "{{ business_validation_checks(this) }}"
+        - "INSERT INTO {{ ref('data_lineage') }} VALUES ('{{ this }}', '{{ run_started_at }}', 'gold')"
+
+# Configurações de snapshots para CDC
+snapshots:
+  datalab_medallion:
+    +target_schema: snapshots
+    +unique_key: id
+    +strategy: timestamp
+    +updated_at: updated_at
+
+# Seeds (dados estáticos)
+seeds:
+  datalab_medallion:
+    +schema: reference_data
+    +quote_columns: false
+
+# Testes de qualidade de dados
+tests:
+  +store_failures: true
+  +schema: data_quality
+
+# Variáveis globais
+vars:
+  # Configurações de ambiente
+  environment: "{{ env_var('DBT_ENVIRONMENT', 'development') }}"
+
+  # Configurações da Medallion Architecture
+  bronze_schema: "bronze"
+  silver_schema: "silver"
+  gold_schema: "gold"
+
+  # Configurações de auditoria
+  enable_audit_logs: true
+  audit_schema: "audit"
+
+  # Configurações de retenção de dados
+  bronze_retention_days: 90
+  silver_retention_days: 365
+  gold_retention_days: 2555 # 7 anos
+
+  # Configurações de qualidade de dados
+  data_quality_threshold: 0.95
+  enable_data_profiling: true
+
+  # Configurações de performance
+  batch_size: 10000
+  max_parallel_jobs: 4
+
+  # Configurações específicas do Snowflake
+  snowflake_warehouse_size: "X-SMALL"
+  snowflake_auto_suspend: 300
+  snowflake_auto_resume: true
+
+# Hooks globais
+on-run-start:
+  - "{{ create_audit_log_table() }}"
+  - "{{ create_data_lineage_table() }}"
+  - "{{ log('Iniciando execução DBT para projeto Medallion Architecture', info=true) }}"
+
+on-run-end:
+  - "{{ log('Execução DBT finalizada com sucesso', info=true) }}"
+  - "{{ cleanup_temp_tables() }}"
