@@ -50,7 +50,7 @@ docker-compose ps
 
 | Serviço           | URL                        | Usuário | Senha               |
 | ----------------- | -------------------------- | ------- | ------------------- |
-| **Apache Hop**    | http://localhost:8081/hop/ | admin   | supersecretpassword |
+| **Apache Hop**    | http://localhost:8081/hop/ui/ | admin   | supersecretpassword |
 | **Spark Master**  | http://localhost:8082      | -       | -                   |
 | **MinIO Console** | http://localhost:9001      | admin   | supersecretpassword |
 | **Prefect**       | http://localhost:4200      | -       | -                   |
@@ -77,7 +77,6 @@ datalab-v2/
 ├── docker-compose.yml          # Orquestração de serviços
 ├── .env                        # Variáveis de ambiente
 ├── hop/                        # Configurações do Apache Hop
-│   ├── environments/          # Ambientes (dev, prod, etc.)
 │   ├── projects/             # Projetos template
 │   └── README.md            # Documentação específica
 ├── postgres/                   # Scripts de inicialização
@@ -143,7 +142,7 @@ docker-compose logs spark-master
 
 ### **URLs de Saúde**
 - MinIO: http://localhost:9000/minio/health/live
-- Apache Hop: http://localhost:8081/hop/
+- Apache Hop: http://localhost:8081/hop/ui/
 - Spark: http://localhost:8082
 
 ## 🚨 Troubleshooting

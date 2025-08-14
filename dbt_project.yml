@@ -27,35 +27,18 @@ models:
       +materialized: table
       +schema: bronze
       +tags: ["bronze", "raw_data"]
-      +pre-hook:
-        - "{{ log('Processando camada BRONZE: ' ~ this, info=true) }}"
-      +post-hook:
-        - "{{ audit_table_creation(this) }}"
-        - "INSERT INTO {{ ref('data_lineage') }} VALUES ('{{ this }}', '{{ run_started_at }}', 'bronze')"
 
     # SILVER LAYER - Dados limpos e normalizados
     silver:
       +materialized: table
       +schema: silver
       +tags: ["silver", "cleaned_data"]
-      +pre-hook:
-        - "{{ log('Processando camada SILVER: ' ~ this, info=true) }}"
-      +post-hook:
-        - "{{ audit_table_creation(this) }}"
-        - "{{ data_quality_checks(this) }}"
-        - "INSERT INTO {{ ref('data_lineage') }} VALUES ('{{ this }}', '{{ run_started_at }}', 'silver')"
 
     # GOLD LAYER - Dados agregados para consumo
     gold:
       +materialized: table
       +schema: gold
       +tags: ["gold", "business_ready"]
-      +pre-hook:
-        - "{{ log('Processando camada GOLD: ' ~ this, info=true) }}"
-      +post-hook:
-        - "{{ audit_table_creation(this) }}"
-        - "{{ business_validation_checks(this) }}"
-        - "INSERT INTO {{ ref('data_lineage') }} VALUES ('{{ this }}', '{{ run_started_at }}', 'gold')"
 
 # Configurações de snapshots para CDC
 snapshots:
@@ -110,10 +93,7 @@ vars:
 
 # Hooks globais
 on-run-start:
-  - "{{ create_audit_log_table() }}"
-  - "{{ create_data_lineage_table() }}"
   - "{{ log('Iniciando execução DBT para projeto Medallion Architecture', info=true) }}"
 
 on-run-end:
   - "{{ log('Execução DBT finalizada com sucesso', info=true) }}"
-  - "{{ cleanup_temp_tables() }}"
